@@ -42,4 +42,6 @@ const server = createServer(async (req, res) => {
     json(res, 404, { error: 'Not found' });
   } catch { json(res, 400, { error: 'Invalid request' }); }
 });
-server.listen(Number(process.env.PROVIDER_PORT || 4301), '127.0.0.1', () => console.log('Mock provider listening on loopback'));
+const port = Number(process.env.PROVIDER_PORT || 4301);
+const host = process.env.LISTEN_HOST || '127.0.0.1';
+server.listen(port, host, () => console.log('Mock provider listening on ' + host + ':' + port));

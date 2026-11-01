@@ -49,5 +49,7 @@ const server = createServer(async (req, res) => {
     json(res, 200, result);
   } catch (e) { json(res, e.status || 502, { error: e.message }); }
 });
-server.listen(Number(process.env.PORT || 4300), '127.0.0.1', () => console.log('Support desk: http://127.0.0.1:' + (process.env.PORT || 4300)));
+const port = Number(process.env.PORT || 4300);
+const host = process.env.LISTEN_HOST || '127.0.0.1';
+server.listen(port, host, () => console.log('Support desk: http://127.0.0.1:' + port));
 process.on('SIGTERM', () => server.close(() => { service.close(); process.exit(); }));

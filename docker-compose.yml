@@ -1,0 +1,35 @@
+services:
+  provider:
+    build: .
+    image: support-desk:local
+    command: ["node", "src/mock-provider.mjs"]
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      PROVIDER_PORT: 4301
+      PROVIDER_DB: /app/data/provider.sqlite
+    ports:
+      - "127.0.0.1:4301:4301"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4301/deliveries').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  desk:
+    build: .
+    image: support-desk:local
+    command: ["node", "src/server.mjs"]
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      PORT: 4300
+      PROVIDER_URL: http://provider:4301
+      DESK_DB: /app/data/desk.sqlite
+    ports:
+      - "127.0.0.1:4300:4300"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      provider:
+        condition: service_healthy

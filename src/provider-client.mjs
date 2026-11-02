@@ -1,3 +1,5 @@
+// Adapter for the mock provider. kind tells the desk whether a failure is safe
+// to show as rejected, or whether the delivery may already exist.
 export class ProviderClient {
   constructor(baseUrl = 'http://127.0.0.1:4301') { this.baseUrl = baseUrl; }
   async send(payload) {

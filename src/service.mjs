@@ -1,70 +1,68 @@
-import { randomUUID } from 'node:crypto';
-import { openStore, record, ticketView, DeskError } from './store.mjs';
+import { openStore } from './db/connection.mjs';
+import { AttemptRepository } from './repositories/attempt-repository.mjs';
+import { AuditRepository } from './repositories/audit-repository.mjs';
+import { MessageRepository } from './repositories/message-repository.mjs';
+import { TicketRepository } from './repositories/ticket-repository.mjs';
+import { DeliveryService } from './services/delivery-service.mjs';
+import { TicketService } from './services/ticket-service.mjs';
+import { WebhookService } from './services/webhook-service.mjs';
 
-// This inherited implementation is intentionally incomplete. See README acceptance criteria.
+// Facade over the desk's three workflows (tickets, webhooks, delivery).
+// HTTP (server.mjs) and tests depend only on this class, not on the
+// repositories or services it wires together — that composition can change
+// without touching either caller.
 export class DeskService {
   constructor({ databasePath = ':memory:', provider }) {
     this.db = openStore(databasePath);
-    this.provider = provider;
+
+    const tickets = new TicketRepository(this.db);
+    const messages = new MessageRepository(this.db);
+    const audit = new AuditRepository(this.db);
+    const attempts = new AttemptRepository(this.db);
+
+    this.ticketService = new TicketService({ db: this.db, tickets, messages, audit, attempts });
+    this.webhookService = new WebhookService({ db: this.db, tickets, messages, audit });
+    this.deliveryService = new DeliveryService({ db: this.db, tickets, attempts, audit, provider });
   }
-  close() { this.db.close(); }
+
+  close() {
+    this.db.close();
+  }
+
   listTickets(actor) {
-    return this.db.prepare('SELECT * FROM tickets WHERE tenant_id = ? ORDER BY id').all(actor.tenantId);
+    return this.ticketService.list(actor);
   }
-  row(actor, id) {
-    const row = this.db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
-    if (!row) throw new DeskError(404, 'Ticket not found');
-    return row;
+
+  getTicket(actor, id) {
+    return this.ticketService.get(actor, id);
   }
-  getTicket(actor, id) { return ticketView(this.db, this.row(actor, id)); }
+
   receiveWebhook(event) {
-    const t = this.db.prepare('SELECT * FROM tickets WHERE id = ? AND tenant_id = ?')
-      .get(event.ticketId, event.tenantId);
-    if (!t || !event.eventId || typeof event.body !== 'string') throw new DeskError(400, 'Invalid event');
-    this.db.prepare('INSERT INTO messages(ticket_id, event_id, body) VALUES (?, ?, ?)')
-      .run(t.id, event.eventId, event.body);
-    record(this.db, t.id, 'inbound', event.eventId);
-    return { accepted: true };
+    return this.webhookService.receive(event);
   }
+
   updateDraft(actor, id, body) {
-    this.row(actor, id);
-    if (typeof body !== 'string' || !body.trim()) throw new DeskError(400, 'A reply is required');
-    this.db.prepare("UPDATE tickets SET draft = ?, version = version + 1, send_state = 'DRAFT' WHERE id = ?")
-      .run(body, id);
-    record(this.db, id, 'draft_updated', actor.id);
+    this.ticketService.updateDraft(actor, id, body);
     return this.getTicket(actor, id);
   }
+
   approveDraft(actor, id) {
-    const t = this.row(actor, id);
-    if (!t.draft) throw new DeskError(400, 'No draft');
-    this.db.prepare('UPDATE tickets SET approved_version = version WHERE id = ?').run(id);
-    record(this.db, id, 'approved', actor.id);
+    this.ticketService.approve(actor, id);
     return this.getTicket(actor, id);
   }
+
   handoff(actor, id) {
-    this.row(actor, id);
-    this.db.prepare("UPDATE tickets SET owner = 'human' WHERE id = ?").run(id);
-    record(this.db, id, 'human_handoff', actor.id);
+    this.ticketService.handoff(actor, id);
     return this.getTicket(actor, id);
   }
-  async sendReply(actor, id, { automatic = false } = {}) {
-    const t = this.row(actor, id);
-    if (t.approved_version == null) throw new DeskError(409, 'Approve the reply first');
-    let result;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        result = await this.provider.send({ clientRef: randomUUID(), ticketId: id, body: t.draft });
-        break;
-      } catch (error) {
-        if (attempt === 1) throw error;
-      }
-    }
-    this.db.prepare("UPDATE tickets SET send_state = 'SENT' WHERE id = ?").run(id);
-    record(this.db, id, 'sent', `${automatic ? 'automation' : actor.id}: ${result.providerMessageId}`);
+
+  async sendReply(actor, id, options) {
+    await this.deliveryService.send(actor, id, options);
     return this.getTicket(actor, id);
   }
+
   async reconcile(actor, id) {
-    this.row(actor, id);
-    throw new DeskError(501, 'Reconciliation has not been implemented');
+    await this.deliveryService.reconcile(actor, id);
+    return this.getTicket(actor, id);
   }
 }
